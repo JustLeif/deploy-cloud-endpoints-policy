@@ -70,7 +70,7 @@ fn deploy_policy(arguments: Arguments) {
     let config_label = get_config_label(std::str::from_utf8(&endpoints_deploy.stderr).unwrap());
     let service_label = get_service_label(std::str::from_utf8(&endpoints_deploy.stderr).unwrap());
     println!("{}", "Please wait...".blue());
-    let build_image = Command::new("./gcloud_build_image")
+    let build_image = Command::new(&arguments.path_to_image_build_script.unwrap())
         .arg("-s")
         .arg(service_label)
         .arg("-c")
