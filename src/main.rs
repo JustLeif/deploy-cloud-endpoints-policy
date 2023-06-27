@@ -1,52 +1,70 @@
 use colored::Colorize;
 use std::env;
 use std::process::Command;
-
-fn main() {
-    let arguments: Vec<String> = env::args().collect();
-    match arguments.get(1) {
-        Some(policy_path) => {
-            if policy_path == "help" {
-                print_error();
-                return;
-            }
-            match arguments.get(2) {
-                Some(project_id) => match arguments.get(3) {
-                    Some(gateway_name) => match arguments.get(4) {
-                        Some(region) => {
-                            println!(
-                                "{} {} {} {} {} {} {} {}\n{}",
-                                "Preparing to deploy the given ESPv2 Policy from path:".red(),
-                                policy_path.green(),
-                                "in project".red(),
-                                project_id.green(),
-                                "with cloud run container name".red(),
-                                gateway_name.green(),
-                                "to region".red(),
-                                region.green(),
-                                "Please wait...".blue()
-                            );
-                            deploy_gateway(policy_path, project_id, gateway_name, region);
-                        }
-                        None => print_error(),
-                    },
-                    None => print_error(),
-                },
-                None => print_error(),
-            }
+struct Arguments<'a> {
+    path_to_open_api_specification: Option<&'a str>,
+    path_to_image_build_script: Option<&'a str>,
+    project_id: Option<&'a str>,
+    cloud_run_service_name: Option<&'a str>,
+    region: Option<&'a str>,
+}
+impl<'a> Arguments<'a> {
+    fn new() -> Arguments<'a> {
+        Arguments {
+            path_to_open_api_specification: None,
+            path_to_image_build_script: None,
+            project_id: None,
+            cloud_run_service_name: None,
+            region: None,
         }
-        None => print_error(),
+    }
+    fn has_all_arguments(&self) -> bool {
+        return self.path_to_open_api_specification.is_some()
+            && self.path_to_image_build_script.is_some()
+            && self.project_id.is_some()
+            && self.cloud_run_service_name.is_some()
+            && self.region.is_some();
     }
 }
 
-fn deploy_gateway(policy_path: &str, project_id: &str, gateway_name: &str, region: &str) {
+fn main() {
+    let arguments: Vec<String> = env::args().collect();
+    if &arguments[1] == "--help" {
+        print_help();
+    } else {
+        match parse_arguments(&arguments) {
+            Ok(args) => {
+                deploy_policy(args);
+            }
+            Err(message) => {
+                println!("{}", message);
+                print_help();
+            }
+        }
+    }
+}
+
+fn deploy_policy(arguments: Arguments) {
+    println!(
+        "{} {} {} {} {} {} {} {}\n{}",
+        "Preparing to deploy the given ESPv2 Policy from path:".red(),
+        &arguments.path_to_open_api_specification.unwrap().green(),
+        "in project".red(),
+        &arguments.project_id.unwrap().green(),
+        "with cloud run service name".red(),
+        &arguments.cloud_run_service_name.unwrap().green(),
+        "to region".red(),
+        &arguments.region.unwrap().green(),
+        "Please wait...".blue()
+    );
+
     let endpoints_deploy = Command::new("gcloud")
         .arg("endpoints")
         .arg("services")
         .arg("deploy")
-        .arg(policy_path)
+        .arg(&arguments.path_to_open_api_specification.unwrap())
         .arg("--project")
-        .arg(project_id)
+        .arg(&arguments.project_id.unwrap())
         .output()
         .expect("Failed to execute process!");
     let config_label = get_config_label(std::str::from_utf8(&endpoints_deploy.stderr).unwrap());
@@ -58,25 +76,25 @@ fn deploy_gateway(policy_path: &str, project_id: &str, gateway_name: &str, regio
         .arg("-c")
         .arg(config_label)
         .arg("-p")
-        .arg(project_id)
+        .arg(&arguments.project_id.unwrap())
         .output()
         .expect("Cannot find and execute ./gcloud_build_image.sh (Make sure that build_script is in the same directory as the executable)");
     let build_image = get_build_image(
         std::str::from_utf8(&build_image.stderr).unwrap(),
         config_label,
-        project_id,
+        &arguments.project_id.unwrap(),
     );
-    println!("{}", "Deploying build image...".blue());
+    println!("{}", "Please wait...".blue());
     let deploy_image = Command::new("gcloud")
         .arg("run")
         .arg("deploy")
-        .arg(gateway_name)
+        .arg(&arguments.cloud_run_service_name.unwrap())
         .arg(format!("--image={}", format!("{}", build_image).as_str()))
         .arg("--allow-unauthenticated")
         .arg("--platform")
         .arg("managed")
-        .arg(format!("--region={}", region))
-        .arg(format!("--project={}", project_id))
+        .arg(format!("--region={}", &arguments.region.unwrap()))
+        .arg(format!("--project={}", &arguments.project_id.unwrap()))
         .output()
         .expect("Failed to execute process!");
     println!(
@@ -86,12 +104,45 @@ fn deploy_gateway(policy_path: &str, project_id: &str, gateway_name: &str, regio
     );
 }
 
-fn print_error() {
+fn parse_arguments<'a>(arguments: &'a Vec<String>) -> Result<Arguments<'a>, String> {
+    let mut args = Arguments::new();
+    for (index, arg) in arguments.into_iter().enumerate() {
+        match arg.as_str() {
+            "--yaml-path" => {
+                args.path_to_open_api_specification = Some(arguments[index + 1].as_str())
+            }
+            "--build-script-path" => {
+                args.path_to_image_build_script = Some(arguments[index + 1].as_str())
+            }
+            "--project-id" => args.project_id = Some(arguments[index + 1].as_str()),
+            "--cloud-run-service-name" => {
+                args.cloud_run_service_name = Some(arguments[index + 1].as_str())
+            }
+            "--region" => args.region = Some(arguments[index + 1].as_str()),
+            _ => {}
+        }
+    }
+    if !args.has_all_arguments() {
+        return Err("Not all arguments were provided. Please provide all arguments".to_string());
+    }
+    return Ok(args);
+}
+
+fn print_help() {
     println!(
-        "{}",
-        "Usage: ./itb-deploy-gateway <path_to_espv2_yaml_definition> <project_id> <gateway_name> <region (e.g. us-central1)>"
-            .bright_red()
-    )
+        "{}\n\t{} {}\n\t{} {}\n\t{} {}\n\t{} {}\n\t{} {}",
+        "Usage: ./<bin_name>".bright_red(),
+        "--yaml-path".green(),
+        "<path_to_openapi_spec>".blue(),
+        "--build-script-path".green(),
+        "<path_to_gcloud_build_image>".blue(),
+        "--project-id".green(),
+        "<project_id>".blue(),
+        "--cloud-run-service-name".green(),
+        "<gateway_name>".blue(),
+        "--region".green(),
+        "<region_id>".blue()
+    );
 }
 
 fn get_config_label(stdout: &str) -> &str {
